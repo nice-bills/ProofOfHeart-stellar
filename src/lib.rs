@@ -309,6 +309,10 @@ impl ProofOfHeart {
     pub fn get_revenue_claimed(env: Env, campaign_id: u32, contributor: Address) -> i128 {
         env.storage().instance().get(&DataKey::RevenueClaimed(campaign_id, contributor)).unwrap_or(0)
     }
+
+    pub fn get_campaign_count(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::CampaignCount).unwrap_or(0)
+    }
 }
 
 mod test;
