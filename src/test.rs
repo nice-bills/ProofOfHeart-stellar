@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
+    Address, Env, IntoVal, String, Symbol,
+};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
 
@@ -84,6 +87,18 @@ fn test_contribute_and_withdraw_success() {
 }
 
 #[test]
+fn test_creator_cannot_contribute_to_own_campaign() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) = setup_env();
+
+    let title = String::from_str(&env, "Self Funding Block");
+    let desc = String::from_str(&env, "Creator should not contribute");
+    let campaign_id = client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
+
+    let res = client.try_contribute(&campaign_id, &creator, &100);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
 fn test_cancel_and_refund() {
     let (env, _admin, creator, contributor1, contributor2, token, token_admin, client) = setup_env();
 
@@ -107,6 +122,40 @@ fn test_cancel_and_refund() {
     assert_eq!(token.balance(&contributor1), 2000);
     assert_eq!(token.balance(&contributor2), 1000);
     assert_eq!(token.balance(&client.address), 0);
+}
+
+#[test]
+fn test_claim_refund_requires_contributor_auth() {
+    let (env, _admin, creator, contributor1, _contributor2, token, token_admin, client) = setup_env();
+
+    token_admin.mint(&contributor1, &2000);
+
+    let title = String::from_str(&env, "Auth Refund");
+    let desc = String::from_str(&env, "Only contributor can claim");
+    let campaign_id = client.create_campaign(&creator, &title, &desc, &5000, &10, &Category::Learner, &false, &0);
+
+    client.contribute(&campaign_id, &contributor1, &1000);
+    client.cancel_campaign(&campaign_id);
+
+    client.claim_refund(&campaign_id, &contributor1);
+
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (auth_addr, invocation) = &auths[0];
+    assert_eq!(auth_addr, &contributor1);
+    assert_eq!(
+        invocation,
+        &AuthorizedInvocation {
+            function: AuthorizedFunction::Contract((
+                client.address.clone(),
+                Symbol::new(&env, "claim_refund"),
+                (campaign_id, contributor1.clone()).into_val(&env),
+            )),
+            sub_invocations: Default::default(),
+        }
+    );
+
+    assert_eq!(token.balance(&contributor1), 2000);
 }
 
 #[test]
@@ -162,7 +211,7 @@ fn test_failure_states() {
     let res = client.try_withdraw_funds(&campaign_id);
     assert_eq!(res.unwrap_err().unwrap(), Error::FundingGoalNotReached);
 
-    env.ledger().set(soroban_sdk::testutils::LedgerInfo { timestamp: env.ledger().timestamp() + (duration_days * 86450), protocol_version: 22, sequence_number: env.ledger().sequence(), network_id: [0; 32], base_reserve: 10, min_temp_entry_ttl: 10, min_persistent_entry_ttl: 10, max_entry_ttl: 10 }); 
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo { timestamp: env.ledger().timestamp() + (duration_days * 86450), protocol_version: 20, sequence_number: env.ledger().sequence(), network_id: [0; 32], base_reserve: 10, min_temp_entry_ttl: 10, min_persistent_entry_ttl: 10, max_entry_ttl: 10 }); 
 
     let res = client.try_contribute(&campaign_id, &contributor1, &500);
     assert_eq!(res.unwrap_err().unwrap(), Error::DeadlinePassed);
@@ -181,4 +230,93 @@ fn test_get_version() {
 
     // init stores CONTRACT_VERSION (1) in instance storage
     assert_eq!(client.get_version(), 1u32);
+}
+
+#[test]
+fn test_community_voting_verification_success() {
+    let (env, _admin, creator, contributor1, contributor2, _token, token_admin, client) = setup_env();
+    let voter3 = Address::generate(&env);
+
+    token_admin.mint(&contributor1, &100);
+    token_admin.mint(&contributor2, &100);
+    token_admin.mint(&voter3, &100);
+
+    let title = String::from_str(&env, "Community Verified");
+    let desc = String::from_str(&env, "Verify by voting");
+    let campaign_id = client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
+
+    client.vote_on_campaign(&campaign_id, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id, &voter3, &false);
+
+    assert_eq!(client.get_approve_votes(&campaign_id), 2);
+    assert_eq!(client.get_reject_votes(&campaign_id), 1);
+    assert_eq!(client.has_voted(&campaign_id, &contributor1), true);
+
+    client.verify_campaign(&campaign_id);
+    let campaign = client.get_campaign(&campaign_id);
+    assert_eq!(campaign.is_verified, true);
+}
+
+#[test]
+fn test_vote_prevents_double_voting_and_requires_token_holder() {
+    let (env, _admin, creator, contributor1, _, _token, token_admin, client) = setup_env();
+    let non_holder = Address::generate(&env);
+
+    token_admin.mint(&contributor1, &100);
+
+    let title = String::from_str(&env, "Vote Safety");
+    let desc = String::from_str(&env, "No duplicate votes");
+    let campaign_id = client.create_campaign(&creator, &title, &desc, &500, &30, &Category::Learner, &false, &0);
+
+    client.vote_on_campaign(&campaign_id, &contributor1, &true);
+
+    let res = client.try_vote_on_campaign(&campaign_id, &contributor1, &false);
+    assert_eq!(res.unwrap_err().unwrap(), Error::AlreadyVoted);
+
+    let res = client.try_vote_on_campaign(&campaign_id, &non_holder, &true);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotTokenHolder);
+}
+
+#[test]
+fn test_verify_campaign_quorum_and_threshold_edges() {
+    let (env, admin, creator, contributor1, contributor2, _token, token_admin, client) = setup_env();
+    let voter3 = Address::generate(&env);
+    let voter4 = Address::generate(&env);
+
+    token_admin.mint(&contributor1, &100);
+    token_admin.mint(&contributor2, &100);
+    token_admin.mint(&voter3, &100);
+    token_admin.mint(&voter4, &100);
+
+    client.set_voting_params(&admin, &4, &7500);
+    assert_eq!(client.get_min_votes_quorum(), 4);
+    assert_eq!(client.get_approval_threshold_bps(), 7500);
+
+    let title1 = String::from_str(&env, "Quorum Campaign");
+    let desc1 = String::from_str(&env, "Needs 4 votes");
+    let campaign_id_1 = client.create_campaign(&creator, &title1, &desc1, &700, &30, &Category::Publisher, &false, &0);
+
+    client.vote_on_campaign(&campaign_id_1, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id_1, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id_1, &voter3, &true);
+
+    let res = client.try_verify_campaign(&campaign_id_1);
+    assert_eq!(res.unwrap_err().unwrap(), Error::VotingQuorumNotMet);
+
+    client.vote_on_campaign(&campaign_id_1, &voter4, &false);
+    client.verify_campaign(&campaign_id_1);
+    assert_eq!(client.get_campaign(&campaign_id_1).is_verified, true);
+
+    let title2 = String::from_str(&env, "Threshold Campaign");
+    let desc2 = String::from_str(&env, "Fails threshold");
+    let campaign_id_2 = client.create_campaign(&creator, &title2, &desc2, &700, &30, &Category::Publisher, &false, &0);
+
+    client.vote_on_campaign(&campaign_id_2, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id_2, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id_2, &voter3, &false);
+    client.vote_on_campaign(&campaign_id_2, &voter4, &false);
+
+    let res = client.try_verify_campaign(&campaign_id_2);
+    assert_eq!(res.unwrap_err().unwrap(), Error::VotingThresholdNotMet);
 }
