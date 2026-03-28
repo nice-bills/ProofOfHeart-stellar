@@ -90,6 +90,7 @@ pub struct ProofOfHeart;
 const DEFAULT_MIN_VOTES_QUORUM: u32 = 3;
 const DEFAULT_APPROVAL_THRESHOLD_BPS: u32 = 6000;
 
+#[allow(clippy::too_many_arguments)]
 #[contractimpl]
 impl ProofOfHeart {
     pub fn init(env: Env, admin: Address, token: Address, platform_fee: u32) -> Result<(), Error> {
