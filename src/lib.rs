@@ -236,6 +236,8 @@ impl ProofOfHeart {
     }
 
     pub fn claim_refund(env: Env, campaign_id: u32, contributor: Address) -> Result<(), Error> {
+        contributor.require_auth();
+
         let campaign: Campaign = env.storage().instance().get(&DataKey::Campaign(campaign_id)).ok_or(Error::CampaignNotFound)?;
 
         let failed_due_to_goal = env.ledger().timestamp() > campaign.deadline && campaign.amount_raised < campaign.funding_goal;
