@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
+    Address, Env, IntoVal, String, Symbol,
+};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
 
@@ -107,6 +110,40 @@ fn test_cancel_and_refund() {
     assert_eq!(token.balance(&contributor1), 2000);
     assert_eq!(token.balance(&contributor2), 1000);
     assert_eq!(token.balance(&client.address), 0);
+}
+
+#[test]
+fn test_claim_refund_requires_contributor_auth() {
+    let (env, _admin, creator, contributor1, _contributor2, token, token_admin, client) = setup_env();
+
+    token_admin.mint(&contributor1, &2000);
+
+    let title = String::from_str(&env, "Auth Refund");
+    let desc = String::from_str(&env, "Only contributor can claim");
+    let campaign_id = client.create_campaign(&creator, &title, &desc, &5000, &10, &Category::Learner, &false, &0);
+
+    client.contribute(&campaign_id, &contributor1, &1000);
+    client.cancel_campaign(&campaign_id);
+
+    client.claim_refund(&campaign_id, &contributor1);
+
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (auth_addr, invocation) = &auths[0];
+    assert_eq!(auth_addr, &contributor1);
+    assert_eq!(
+        invocation,
+        &AuthorizedInvocation {
+            function: AuthorizedFunction::Contract((
+                client.address.clone(),
+                Symbol::new(&env, "claim_refund"),
+                (campaign_id, contributor1.clone()).into_val(&env),
+            )),
+            sub_invocations: Default::default(),
+        }
+    );
+
+    assert_eq!(token.balance(&contributor1), 2000);
 }
 
 #[test]
