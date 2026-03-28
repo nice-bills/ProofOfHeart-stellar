@@ -400,19 +400,9 @@ impl ProofOfHeart {
             return Err(Error::ValidationFailed);
         }
 
-        let pool_key = DataKey::RevenuePool(campaign_id);
-        let total_pool: i128 = env.storage().instance().get(&pool_key).unwrap_or(0);
-
-        let contributor_pool = (total_pool * (campaign.revenue_share_percentage as i128)) / 10000;
-
-        let total_due_to_contributor = (contribution * contributor_pool) / campaign.amount_raised;
-
-        let claimed_key = DataKey::RevenueClaimed(campaign_id, contributor.clone());
-        let already_claimed: i128 = Self::get_revenue_claimed(env.clone(), campaign_id, contributor.clone());
-
-        let claimable = total_due_to_contributor - already_claimed;
         let total_pool = get_revenue_pool(&env, campaign_id);
-        let total_due = (contribution * total_pool) / campaign.amount_raised;
+        let contributor_pool = (total_pool * (campaign.revenue_share_percentage as i128)) / 10000;
+        let total_due = (contribution * contributor_pool) / campaign.amount_raised;
         let already_claimed = get_revenue_claimed(&env, campaign_id, &contributor);
         let claimable = total_due - already_claimed;
 
@@ -420,13 +410,6 @@ impl ProofOfHeart {
             return Err(Error::NoFundsToWithdraw);
         }
 
-        if already_claimed + claimable > total_due_to_contributor {
-            return Err(Error::ValidationFailed); // Prevent over-claiming safety guard
-        }
-
-        env.storage()
-            .instance()
-            .set(&claimed_key, &(already_claimed + claimable));
         set_revenue_claimed(&env, campaign_id, &contributor, already_claimed + claimable);
 
         let token_addr = get_token(&env);
@@ -614,11 +597,6 @@ impl ProofOfHeart {
         Ok(())
     }
 
-    pub fn get_campaign(env: Env, campaign_id: u32) -> Campaign {
-        env.storage()
-            .instance()
-            .get(&DataKey::Campaign(campaign_id))
-            .unwrap()
     /// Gets a campaign's current state.
     ///
     /// # Returns
@@ -642,11 +620,10 @@ impl ProofOfHeart {
         get_revenue_claimed(&env, campaign_id, &contributor)
     }
 
+    /// Returns the total number of campaigns created.
     pub fn get_campaign_count(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::CampaignCount)
-            .unwrap_or(0)
+        get_campaign_count(&env)
+    }
     /// Returns the current contract version stored in instance storage.
     /// A return value of 0 indicates the contract was initialized before version tracking was added.
     pub fn get_version(env: Env) -> u32 {
