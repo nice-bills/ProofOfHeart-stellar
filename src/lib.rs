@@ -1,4 +1,12 @@
 #![no_std]
+#![allow(unexpected_cfgs)]
+
+/// Current contract version. Increment this on each breaking upgrade.
+/// To upgrade a deployed Soroban contract, call `env.deployer().update_current_contract_wasm(new_wasm_hash)`
+/// from an admin-guarded function after deploying the new WASM to the network. The storage layout
+/// (DataKey variants, struct fields) must remain backwards-compatible unless a migration function
+/// is included in the upgrade transaction.
+const CONTRACT_VERSION: u32 = 1;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, String,
@@ -27,6 +35,7 @@ pub enum Error {
     NotTokenHolder = 17,
     VotingQuorumNotMet = 18,
     VotingThresholdNotMet = 19,
+    AlreadyInitialized = 20,
 }
 
 #[contracttype]
@@ -67,6 +76,7 @@ pub enum DataKey {
     Contribution(u32, Address),
     RevenuePool(u32),
     RevenueClaimed(u32, Address),
+    Version,
     ApproveVotes(u32),
     RejectVotes(u32),
     HasVoted(u32, Address),
@@ -83,7 +93,10 @@ const DEFAULT_APPROVAL_THRESHOLD_BPS: u32 = 6000;
 #[allow(clippy::too_many_arguments)]
 #[contractimpl]
 impl ProofOfHeart {
-    pub fn init(env: Env, admin: Address, token: Address, platform_fee: u32) {
+    pub fn init(env: Env, admin: Address, token: Address, platform_fee: u32) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
@@ -99,11 +112,15 @@ impl ProofOfHeart {
         env.storage().instance().set(&DataKey::CampaignCount, &0u32);
         env.storage()
             .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
+        env.storage()
+            .instance()
             .set(&DataKey::MinVotesQuorum, &DEFAULT_MIN_VOTES_QUORUM);
         env.storage().instance().set(
             &DataKey::ApprovalThresholdBps,
             &DEFAULT_APPROVAL_THRESHOLD_BPS,
         );
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -513,6 +530,29 @@ impl ProofOfHeart {
     }
 
     pub fn verify_campaign(env: Env, campaign_id: u32) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let mut campaign: Campaign = env
+            .storage()
+            .instance()
+            .get(&DataKey::Campaign(campaign_id))
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.is_verified {
+            return Err(Error::CampaignAlreadyVerified);
+        }
+
+        campaign.is_verified = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::Campaign(campaign_id), &campaign);
+        env.events().publish(("campaign_verified", campaign_id), ());
+
+        Ok(())
+    }
+
+    pub fn verify_campaign_with_votes(env: Env, campaign_id: u32) -> Result<(), Error> {
         let mut campaign: Campaign = env
             .storage()
             .instance()
@@ -592,6 +632,28 @@ impl ProofOfHeart {
             .unwrap_or(0)
     }
 
+    /// Returns the current contract version stored in instance storage.
+    /// A return value of 0 indicates the contract was initialized before version tracking was added.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::Version).unwrap_or(0)
+    }
+
+    pub fn update_platform_fee(env: Env, new_fee: u32) -> Result<(), Error> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let valid_fee = if new_fee > 1000 { 1000 } else { new_fee };
+        let old_fee: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlatformFee)
+            .unwrap_or(300);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformFee, &valid_fee);
+        env.events().publish(("fee_updated",), (old_fee, valid_fee));
+        Ok(())
+    }
+
     pub fn get_approve_votes(env: Env, campaign_id: u32) -> u32 {
         env.storage()
             .instance()
@@ -625,6 +687,21 @@ impl ProofOfHeart {
             .instance()
             .get(&DataKey::ApprovalThresholdBps)
             .unwrap_or(DEFAULT_APPROVAL_THRESHOLD_BPS)
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin).unwrap()
+    }
+
+    pub fn get_token(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Token).unwrap()
+    }
+
+    pub fn get_platform_fee(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PlatformFee)
+            .unwrap_or(300)
     }
 }
 

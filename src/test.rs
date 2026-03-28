@@ -337,7 +337,7 @@ fn test_failure_states() {
 
     env.ledger().set(soroban_sdk::testutils::LedgerInfo {
         timestamp: env.ledger().timestamp() + (duration_days * 86450),
-        protocol_version: 20,
+        protocol_version: 22,
         sequence_number: env.ledger().sequence(),
         network_id: [0; 32],
         base_reserve: 10,
@@ -355,6 +355,61 @@ fn test_failure_states() {
     // After failure refund successful
     client.claim_refund(&campaign_id, &contributor1);
     assert_eq!(token.balance(&contributor1), 5000);
+}
+
+#[test]
+fn test_get_version() {
+    let (_env, _admin, _creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
+
+    // init stores CONTRACT_VERSION (1) in instance storage
+    assert_eq!(client.get_version(), 1u32);
+}
+
+#[test]
+fn test_admin_verify_campaign_success() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
+
+    let title = String::from_str(&env, "Admin Verification");
+    let desc = String::from_str(&env, "Admin verifies campaign");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Educator,
+        &false,
+        &0,
+    );
+
+    client.verify_campaign(&campaign_id);
+    let campaign = client.get_campaign(&campaign_id);
+    assert_eq!(campaign.is_verified, true);
+}
+
+#[test]
+fn test_admin_verify_campaign_duplicate_attempt() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
+
+    let title = String::from_str(&env, "Duplicate Verification");
+    let desc = String::from_str(&env, "Cannot verify twice");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
+
+    client.verify_campaign(&campaign_id);
+    let res = client.try_verify_campaign(&campaign_id);
+    assert_eq!(res.unwrap_err().unwrap(), Error::CampaignAlreadyVerified);
 }
 
 #[test]
@@ -388,7 +443,7 @@ fn test_community_voting_verification_success() {
     assert_eq!(client.get_reject_votes(&campaign_id), 1);
     assert!(client.has_voted(&campaign_id, &contributor1));
 
-    client.verify_campaign(&campaign_id);
+    client.verify_campaign_with_votes(&campaign_id);
     let campaign = client.get_campaign(&campaign_id);
     assert!(campaign.is_verified);
 }
@@ -455,7 +510,7 @@ fn test_verify_campaign_quorum_and_threshold_edges() {
     client.vote_on_campaign(&campaign_id_1, &contributor2, &true);
     client.vote_on_campaign(&campaign_id_1, &voter3, &true);
 
-    let res = client.try_verify_campaign(&campaign_id_1);
+    let res = client.try_verify_campaign_with_votes(&campaign_id_1);
     assert_eq!(res.unwrap_err().unwrap(), Error::VotingQuorumNotMet);
 
     client.vote_on_campaign(&campaign_id_1, &voter4, &false);
@@ -480,6 +535,38 @@ fn test_verify_campaign_quorum_and_threshold_edges() {
     client.vote_on_campaign(&campaign_id_2, &voter3, &false);
     client.vote_on_campaign(&campaign_id_2, &voter4, &false);
 
-    let res = client.try_verify_campaign(&campaign_id_2);
+    let res = client.try_verify_campaign_with_votes(&campaign_id_2);
     assert_eq!(res.unwrap_err().unwrap(), Error::VotingThresholdNotMet);
+}
+
+#[test]
+fn test_update_platform_fee() {
+    let (_env, _admin, _creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
+
+    let result = client.try_update_platform_fee(&500);
+    assert!(
+        result.is_ok(),
+        "Admin should be able to update platform fee"
+    );
+
+    let result = client.try_update_platform_fee(&5000);
+    assert!(result.is_ok(), "Fee update should succeed even when capped");
+}
+
+#[test]
+fn test_reinit_prevention() {
+    let (env, admin, _, _, _, token, _, client) = setup_env();
+
+    let attacker = Address::generate(&env);
+    let fake_token = Address::generate(&env);
+
+    // Attempt re-initialization with different values — must be rejected
+    let res = client.try_init(&attacker, &fake_token, &0);
+    assert!(res.is_err()); // Should fail with AlreadyInitialized
+
+    // Verify original values remain unchanged after rejected re-init
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_token(), token.address);
+    assert_eq!(client.get_platform_fee(), 300);
 }
