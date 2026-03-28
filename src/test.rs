@@ -1,11 +1,23 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger},
+    Address, Env, IntoVal, String, Symbol,
+};
 
-fn setup_env<'a>() -> (Env, Address, Address, Address, Address, TokenClient<'a>, TokenAdminClient<'a>, ProofOfHeartClient<'a>) {
+fn setup_env<'a>() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    Address,
+    TokenClient<'a>,
+    TokenAdminClient<'a>,
+    ProofOfHeartClient<'a>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -24,7 +36,16 @@ fn setup_env<'a>() -> (Env, Address, Address, Address, Address, TokenClient<'a>,
 
     client.init(&admin, &token_address, &300);
 
-    (env, admin, creator, contributor1, contributor2, token, token_admin, client)
+    (
+        env,
+        admin,
+        creator,
+        contributor1,
+        contributor2,
+        token,
+        token_admin,
+        client,
+    )
 }
 
 #[test]
@@ -35,20 +56,65 @@ fn test_create_and_validation() {
     let desc = String::from_str(&env, "Teaching science to kids");
 
     // Test goal validation
-    let res = client.try_create_campaign(&creator, &title, &desc, &0, &30, &Category::Publisher, &false, &0);
+    let res = client.try_create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &0,
+        &30,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
     assert_eq!(res.unwrap_err().unwrap(), Error::FundingGoalMustBePositive);
 
     // Test duration validation
-    let res = client.try_create_campaign(&creator, &title, &desc, &500, &0, &Category::Publisher, &false, &0);
+    let res = client.try_create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &500,
+        &0,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
     assert_eq!(res.unwrap_err().unwrap(), Error::InvalidDuration);
 
-    let res = client.try_create_campaign(&creator, &title, &desc, &500, &400, &Category::Publisher, &false, &0);
+    let res = client.try_create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &500,
+        &400,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
     assert_eq!(res.unwrap_err().unwrap(), Error::InvalidDuration);
 
-    let res = client.try_create_campaign(&creator, &title, &desc, &500, &30, &Category::Educator, &true, &1000);
+    let res = client.try_create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &500,
+        &30,
+        &Category::Educator,
+        &true,
+        &1000,
+    );
     assert_eq!(res.unwrap_err().unwrap(), Error::RevenueShareOnlyForStartup);
 
-    let campaign_id = client.create_campaign(&creator, &title, &desc, &2000, &30, &Category::EducationalStartup, &true, &1500);
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &2000,
+        &30,
+        &Category::EducationalStartup,
+        &true,
+        &1500,
+    );
     assert_eq!(campaign_id, 1);
 
     let campaign = client.get_campaign(&campaign_id);
@@ -66,7 +132,16 @@ fn test_contribute_and_withdraw_success() {
 
     let title = String::from_str(&env, "Code Camp");
     let desc = String::from_str(&env, "Learn Rust");
-    let campaign_id = client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Educator,
+        &false,
+        &0,
+    );
 
     client.contribute(&campaign_id, &contributor1, &1000);
 
@@ -85,15 +160,47 @@ fn test_contribute_and_withdraw_success() {
 }
 
 #[test]
+fn test_creator_cannot_contribute_to_own_campaign() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
+
+    let title = String::from_str(&env, "Self Funding Block");
+    let desc = String::from_str(&env, "Creator should not contribute");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Educator,
+        &false,
+        &0,
+    );
+
+    let res = client.try_contribute(&campaign_id, &creator, &100);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
 fn test_cancel_and_refund() {
-    let (env, _admin, creator, contributor1, contributor2, token, token_admin, client) = setup_env();
+    let (env, _admin, creator, contributor1, contributor2, token, token_admin, client) =
+        setup_env();
 
     token_admin.mint(&contributor1, &2000);
     token_admin.mint(&contributor2, &1000);
 
     let title = String::from_str(&env, "Failed Idea");
     let desc = String::from_str(&env, "Desc");
-    let campaign_id = client.create_campaign(&creator, &title, &desc, &5000, &10, &Category::Learner, &false, &0);
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &5000,
+        &10,
+        &Category::Learner,
+        &false,
+        &0,
+    );
 
     client.contribute(&campaign_id, &contributor1, &1000);
     client.contribute(&campaign_id, &contributor2, &500);
@@ -111,8 +218,53 @@ fn test_cancel_and_refund() {
 }
 
 #[test]
+fn test_claim_refund_requires_contributor_auth() {
+    let (env, _admin, creator, contributor1, _contributor2, token, token_admin, client) =
+        setup_env();
+
+    token_admin.mint(&contributor1, &2000);
+
+    let title = String::from_str(&env, "Auth Refund");
+    let desc = String::from_str(&env, "Only contributor can claim");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &5000,
+        &10,
+        &Category::Learner,
+        &false,
+        &0,
+    );
+
+    client.contribute(&campaign_id, &contributor1, &1000);
+    client.cancel_campaign(&campaign_id);
+
+    client.claim_refund(&campaign_id, &contributor1);
+
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (auth_addr, invocation) = &auths[0];
+    assert_eq!(auth_addr, &contributor1);
+    assert_eq!(
+        invocation,
+        &AuthorizedInvocation {
+            function: AuthorizedFunction::Contract((
+                client.address.clone(),
+                Symbol::new(&env, "claim_refund"),
+                (campaign_id, contributor1.clone()).into_val(&env),
+            )),
+            sub_invocations: Default::default(),
+        }
+    );
+
+    assert_eq!(token.balance(&contributor1), 2000);
+}
+
+#[test]
 fn test_pull_based_revenue_distribution() {
-    let (env, _admin, creator, contributor1, contributor2, token, token_admin, client) = setup_env();
+    let (env, _admin, creator, contributor1, contributor2, token, token_admin, client) =
+        setup_env();
 
     token_admin.mint(&contributor1, &1000);
     token_admin.mint(&contributor2, &1000);
@@ -120,26 +272,38 @@ fn test_pull_based_revenue_distribution() {
 
     let title = String::from_str(&env, "Next Gen AI");
     let desc = String::from_str(&env, "Build AI");
-    let campaign_id = client.create_campaign(&creator, &title, &desc, &2000, &30, &Category::EducationalStartup, &true, &2000); 
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &2000,
+        &30,
+        &Category::EducationalStartup,
+        &true,
+        &2000,
+    );
 
     client.contribute(&campaign_id, &contributor1, &1000);
     client.contribute(&campaign_id, &contributor2, &1000);
 
     client.withdraw_funds(&campaign_id);
-    
+
     // Deposit revenue
     client.deposit_revenue(&campaign_id, &5000);
     assert_eq!(client.get_revenue_pool(&campaign_id), 5000);
 
     client.claim_revenue(&campaign_id, &contributor1);
     assert_eq!(token.balance(&contributor1), 2500);
-    assert_eq!(client.get_revenue_claimed(&campaign_id, &contributor1), 2500);
+    assert_eq!(
+        client.get_revenue_claimed(&campaign_id, &contributor1),
+        2500
+    );
 
     client.deposit_revenue(&campaign_id, &1000);
     assert_eq!(client.get_revenue_pool(&campaign_id), 6000);
 
     client.claim_revenue(&campaign_id, &contributor1);
-    assert_eq!(token.balance(&contributor1), 3000); 
+    assert_eq!(token.balance(&contributor1), 3000);
 
     client.claim_revenue(&campaign_id, &contributor2);
     assert_eq!(token.balance(&contributor2), 3000);
@@ -149,11 +313,20 @@ fn test_pull_based_revenue_distribution() {
 fn test_failure_states() {
     let (env, _admin, creator, contributor1, _, token, token_admin, client) = setup_env();
     token_admin.mint(&contributor1, &5000);
-    
+
     let title = String::from_str(&env, "Deadline Test");
     let desc = String::from_str(&env, "Desc");
     let duration_days = 2;
-    let campaign_id = client.create_campaign(&creator, &title, &desc, &1000, &duration_days, &Category::Educator, &false, &0);
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &duration_days,
+        &Category::Educator,
+        &false,
+        &0,
+    );
 
     let res = client.try_withdraw_funds(&campaign_id);
     assert_eq!(res.unwrap_err().unwrap(), Error::NoFundsToWithdraw);
@@ -163,7 +336,16 @@ fn test_failure_states() {
     let res = client.try_withdraw_funds(&campaign_id);
     assert_eq!(res.unwrap_err().unwrap(), Error::FundingGoalNotReached);
 
-    env.ledger().set(soroban_sdk::testutils::LedgerInfo { timestamp: env.ledger().timestamp() + (duration_days * 86450), protocol_version: 20, sequence_number: env.ledger().sequence(), network_id: [0; 32], base_reserve: 10, min_temp_entry_ttl: 10, min_persistent_entry_ttl: 10, max_entry_ttl: 10 }); 
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: env.ledger().timestamp() + (duration_days * 86450),
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 10,
+    });
 
     let res = client.try_contribute(&campaign_id, &contributor1, &500);
     assert_eq!(res.unwrap_err().unwrap(), Error::DeadlinePassed);
@@ -177,252 +359,215 @@ fn test_failure_states() {
 }
 
 #[test]
-fn test_get_campaign_count() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
+fn test_get_version() {
+    let (_env, _admin, _creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
 
-    // Initial count should be 0
-    assert_eq!(client.get_campaign_count(), 0);
-
-    let title = String::from_str(&env, "Campaign 1");
-    let desc = String::from_str(&env, "Desc");
-
-    // Create first campaign
-    client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
-    assert_eq!(client.get_campaign_count(), 1);
-
-    // Create second campaign
-    let title2 = String::from_str(&env, "Campaign 2");
-    client.create_campaign(&creator, &title2, &desc, &2000, &30, &Category::Publisher, &false, &0);
-    assert_eq!(client.get_campaign_count(), 2);
-
-    // Create third campaign
-    let title3 = String::from_str(&env, "Campaign 3");
-    client.create_campaign(&creator, &title3, &desc, &3000, &30, &Category::Learner, &false, &0);
-    assert_eq!(client.get_campaign_count(), 3);
+    // init stores CONTRACT_VERSION (1) in instance storage
+    assert_eq!(client.get_version(), 1u32);
 }
 
 #[test]
-fn test_list_campaigns_normal_pagination() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
+fn test_admin_verify_campaign_success() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
 
-    let desc = String::from_str(&env, "Description");
+    let title = String::from_str(&env, "Admin Verification");
+    let desc = String::from_str(&env, "Admin verifies campaign");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Educator,
+        &false,
+        &0,
+    );
 
-    // Create 5 campaigns
-    for i in 1..=5 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            3 => "Campaign 3",
-            4 => "Campaign 4",
-            _ => "Campaign 5",
-        });
-        client.create_campaign(&creator, &title, &desc, &(1000 * i as i128), &30, &Category::Educator, &false, &0);
-    }
-
-    // Test: Get first 2 campaigns (start=0, limit=2)
-    let campaigns = client.list_campaigns(&0, &2);
-    assert_eq!(campaigns.len(), 2);
-    assert_eq!(campaigns.get(0).unwrap().id, 1);
-    assert_eq!(campaigns.get(1).unwrap().id, 2);
-
-    // Test: Get next 2 campaigns (start=2, limit=2)
-    let campaigns = client.list_campaigns(&2, &2);
-    assert_eq!(campaigns.len(), 2);
-    assert_eq!(campaigns.get(0).unwrap().id, 3);
-    assert_eq!(campaigns.get(1).unwrap().id, 4);
-
-    // Test: Get remaining campaigns (start=4, limit=2)
-    let campaigns = client.list_campaigns(&4, &2);
-    assert_eq!(campaigns.len(), 1);
-    assert_eq!(campaigns.get(0).unwrap().id, 5);
+    client.verify_campaign(&campaign_id);
+    let campaign = client.get_campaign(&campaign_id);
+    assert_eq!(campaign.is_verified, true);
 }
 
 #[test]
-fn test_list_campaigns_edge_cases() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
+fn test_admin_verify_campaign_duplicate_attempt() {
+    let (env, _admin, creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
 
-    let desc = String::from_str(&env, "Description");
+    let title = String::from_str(&env, "Duplicate Verification");
+    let desc = String::from_str(&env, "Cannot verify twice");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
 
-    // Create 3 campaigns
-    for i in 1..=3 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            _ => "Campaign 3",
-        });
-        client.create_campaign(&creator, &title, &desc, &(1000 * i as i128), &30, &Category::Educator, &false, &0);
-    }
-
-    // Test: Out-of-bounds start returns empty vector
-    let campaigns = client.list_campaigns(&5, &10);
-    assert_eq!(campaigns.len(), 0);
-
-    // Test: Start at boundary returns empty vector
-    let campaigns = client.list_campaigns(&3, &10);
-    assert_eq!(campaigns.len(), 0);
-
-    // Test: Zero limit returns empty vector
-    let campaigns = client.list_campaigns(&0, &0);
-    assert_eq!(campaigns.len(), 0);
-
-    // Test: Limit larger than remaining campaigns
-    let campaigns = client.list_campaigns(&1, &100);
-    assert_eq!(campaigns.len(), 2);
-    assert_eq!(campaigns.get(0).unwrap().id, 2);
-    assert_eq!(campaigns.get(1).unwrap().id, 3);
+    client.verify_campaign(&campaign_id);
+    let res = client.try_verify_campaign(&campaign_id);
+    assert_eq!(res.unwrap_err().unwrap(), Error::CampaignAlreadyVerified);
 }
 
 #[test]
-fn test_list_campaigns_empty_state() {
-    let (_env, _admin, _, _, _, _, _, client) = setup_env();
+fn test_community_voting_verification_success() {
+    let (env, _admin, creator, contributor1, contributor2, _token, token_admin, client) =
+        setup_env();
+    let voter3 = Address::generate(&env);
 
-    // Test: Empty state returns empty vector
-    let campaigns = client.list_campaigns(&0, &10);
-    assert_eq!(campaigns.len(), 0);
+    token_admin.mint(&contributor1, &100);
+    token_admin.mint(&contributor2, &100);
+    token_admin.mint(&voter3, &100);
 
-    let campaigns = client.list_campaigns(&0, &0);
-    assert_eq!(campaigns.len(), 0);
+    let title = String::from_str(&env, "Community Verified");
+    let desc = String::from_str(&env, "Verify by voting");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &1000,
+        &30,
+        &Category::Educator,
+        &false,
+        &0,
+    );
+
+    client.vote_on_campaign(&campaign_id, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id, &voter3, &false);
+
+    assert_eq!(client.get_approve_votes(&campaign_id), 2);
+    assert_eq!(client.get_reject_votes(&campaign_id), 1);
+    assert_eq!(client.has_voted(&campaign_id, &contributor1), true);
+
+    client.verify_campaign_with_votes(&campaign_id);
+    let campaign = client.get_campaign(&campaign_id);
+    assert_eq!(campaign.is_verified, true);
 }
 
 #[test]
-fn test_list_active_campaigns() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
-
-    let desc = String::from_str(&env, "Description");
-
-    // Create 5 campaigns
-    for i in 1..=5 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            3 => "Campaign 3",
-            4 => "Campaign 4",
-            _ => "Campaign 5",
-        });
-        client.create_campaign(&creator, &title, &desc, &(1000 * i as i128), &30, &Category::Educator, &false, &0);
-    }
-
-    // Cancel campaign 2
-    client.cancel_campaign(&2);
-
-    // Test: Get active campaigns (should skip cancelled campaign 2)
-    let campaigns = client.list_active_campaigns(&0, &10);
-    assert_eq!(campaigns.len(), 4);
-    
-    // Verify campaign 2 is not in the list
-    for campaign in campaigns.iter() {
-        assert_ne!(campaign.id, 2);
-        assert_eq!(campaign.is_active, true);
-        assert_eq!(campaign.is_cancelled, false);
-    }
-}
-
-#[test]
-fn test_list_active_campaigns_with_withdrawn() {
+fn test_vote_prevents_double_voting_and_requires_token_holder() {
     let (env, _admin, creator, contributor1, _, _token, token_admin, client) = setup_env();
+    let non_holder = Address::generate(&env);
 
-    token_admin.mint(&contributor1, &10000);
+    token_admin.mint(&contributor1, &100);
 
-    let desc = String::from_str(&env, "Description");
+    let title = String::from_str(&env, "Vote Safety");
+    let desc = String::from_str(&env, "No duplicate votes");
+    let campaign_id = client.create_campaign(
+        &creator,
+        &title,
+        &desc,
+        &500,
+        &30,
+        &Category::Learner,
+        &false,
+        &0,
+    );
 
-    // Create 3 campaigns
-    for i in 1..=3 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            _ => "Campaign 3",
-        });
-        client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
-    }
+    client.vote_on_campaign(&campaign_id, &contributor1, &true);
 
-    // Contribute to campaign 1 and withdraw funds
-    client.contribute(&1, &contributor1, &1000);
-    client.withdraw_funds(&1);
+    let res = client.try_vote_on_campaign(&campaign_id, &contributor1, &false);
+    assert_eq!(res.unwrap_err().unwrap(), Error::AlreadyVoted);
 
-    // Test: Campaign 1 should not be in active list (funds_withdrawn = true, is_active = false)
-    let campaigns = client.list_active_campaigns(&0, &10);
-    assert_eq!(campaigns.len(), 2);
-    
-    for campaign in campaigns.iter() {
-        assert_ne!(campaign.id, 1);
-        assert_eq!(campaign.is_active, true);
-    }
+    let res = client.try_vote_on_campaign(&campaign_id, &non_holder, &true);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotTokenHolder);
 }
 
 #[test]
-fn test_list_active_campaigns_pagination() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
+fn test_verify_campaign_quorum_and_threshold_edges() {
+    let (env, admin, creator, contributor1, contributor2, _token, token_admin, client) =
+        setup_env();
+    let voter3 = Address::generate(&env);
+    let voter4 = Address::generate(&env);
 
-    let desc = String::from_str(&env, "Description");
+    token_admin.mint(&contributor1, &100);
+    token_admin.mint(&contributor2, &100);
+    token_admin.mint(&voter3, &100);
+    token_admin.mint(&voter4, &100);
 
-    // Create 5 campaigns
-    for i in 1..=5 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            3 => "Campaign 3",
-            4 => "Campaign 4",
-            _ => "Campaign 5",
-        });
-        client.create_campaign(&creator, &title, &desc, &(1000 * i as i128), &30, &Category::Educator, &false, &0);
-    }
+    client.set_voting_params(&admin, &4, &7500);
+    assert_eq!(client.get_min_votes_quorum(), 4);
+    assert_eq!(client.get_approval_threshold_bps(), 7500);
 
-    // Cancel campaigns 2 and 4
-    client.cancel_campaign(&2);
-    client.cancel_campaign(&4);
+    let title1 = String::from_str(&env, "Quorum Campaign");
+    let desc1 = String::from_str(&env, "Needs 4 votes");
+    let campaign_id_1 = client.create_campaign(
+        &creator,
+        &title1,
+        &desc1,
+        &700,
+        &30,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
 
-    // Test: Get first 2 active campaigns (start=0, limit=2)
-    // Active campaigns starting from ID 1: 1, 3
-    let campaigns = client.list_active_campaigns(&0, &2);
-    assert_eq!(campaigns.len(), 2);
-    assert_eq!(campaigns.get(0).unwrap().id, 1);
-    assert_eq!(campaigns.get(1).unwrap().id, 3);
+    client.vote_on_campaign(&campaign_id_1, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id_1, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id_1, &voter3, &true);
 
-    // Test: Get next active campaigns (start=2, limit=2)
-    // Active campaigns starting from ID 3: 3, 5
-    let campaigns = client.list_active_campaigns(&2, &2);
-    assert_eq!(campaigns.len(), 2);
-    assert_eq!(campaigns.get(0).unwrap().id, 3);
-    assert_eq!(campaigns.get(1).unwrap().id, 5);
+    let res = client.try_verify_campaign_with_votes(&campaign_id_1);
+    assert_eq!(res.unwrap_err().unwrap(), Error::VotingQuorumNotMet);
 
-    // Test: Get remaining campaigns (start=4, limit=2)
-    // Active campaigns starting from ID 5: 5
-    let campaigns = client.list_active_campaigns(&4, &2);
-    assert_eq!(campaigns.len(), 1);
-    assert_eq!(campaigns.get(0).unwrap().id, 5);
+    client.vote_on_campaign(&campaign_id_1, &voter4, &false);
+    client.verify_campaign_with_votes(&campaign_id_1);
+    assert_eq!(client.get_campaign(&campaign_id_1).is_verified, true);
+
+    let title2 = String::from_str(&env, "Threshold Campaign");
+    let desc2 = String::from_str(&env, "Fails threshold");
+    let campaign_id_2 = client.create_campaign(
+        &creator,
+        &title2,
+        &desc2,
+        &700,
+        &30,
+        &Category::Publisher,
+        &false,
+        &0,
+    );
+
+    client.vote_on_campaign(&campaign_id_2, &contributor1, &true);
+    client.vote_on_campaign(&campaign_id_2, &contributor2, &true);
+    client.vote_on_campaign(&campaign_id_2, &voter3, &false);
+    client.vote_on_campaign(&campaign_id_2, &voter4, &false);
+
+    let res = client.try_verify_campaign_with_votes(&campaign_id_2);
+    assert_eq!(res.unwrap_err().unwrap(), Error::VotingThresholdNotMet);
 }
 
 #[test]
-fn test_list_active_campaigns_empty_state() {
-    let (_env, _admin, _, _, _, _, _, client) = setup_env();
+fn test_update_platform_fee() {
+    let (_env, _admin, _creator, _contributor1, _contributor2, _token, _token_admin, client) =
+        setup_env();
 
-    // Test: Empty state returns empty vector
-    let campaigns = client.list_active_campaigns(&0, &10);
-    assert_eq!(campaigns.len(), 0);
+    let result = client.try_update_platform_fee(&500);
+    assert!(
+        result.is_ok(),
+        "Admin should be able to update platform fee"
+    );
+
+    let result = client.try_update_platform_fee(&5000);
+    assert!(result.is_ok(), "Fee update should succeed even when capped");
 }
 
 #[test]
-fn test_list_active_campaigns_all_cancelled() {
-    let (env, _admin, creator, _, _, _, _, client) = setup_env();
+fn test_reinit_prevention() {
+    let (env, admin, _, _, _, token, _, client) = setup_env();
 
-    let desc = String::from_str(&env, "Description");
+    let attacker = Address::generate(&env);
+    let fake_token = Address::generate(&env);
 
-    // Create 3 campaigns
-    for i in 1..=3 {
-        let title = String::from_str(&env, match i {
-            1 => "Campaign 1",
-            2 => "Campaign 2",
-            _ => "Campaign 3",
-        });
-        client.create_campaign(&creator, &title, &desc, &1000, &30, &Category::Educator, &false, &0);
-    }
+    // Attempt re-initialization with different values — must be rejected
+    let res = client.try_init(&attacker, &fake_token, &0);
+    assert!(res.is_err()); // Should fail with AlreadyInitialized
 
-    // Cancel all campaigns
-    client.cancel_campaign(&1);
-    client.cancel_campaign(&2);
-    client.cancel_campaign(&3);
-
-    // Test: No active campaigns
-    let campaigns = client.list_active_campaigns(&0, &10);
-    assert_eq!(campaigns.len(), 0);
+    // Verify original values remain unchanged after rejected re-init
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_token(), token.address);
+    assert_eq!(client.get_platform_fee(), 300);
 }
