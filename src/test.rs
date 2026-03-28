@@ -249,6 +249,8 @@ fn test_admin_verify_campaign_duplicate_attempt() {
     let res = client.try_verify_campaign(&campaign_id);
     assert_eq!(res.unwrap_err().unwrap(), Error::CampaignAlreadyVerified);
 }
+
+#[test]
 fn test_community_voting_verification_success() {
     let (env, _admin, creator, contributor1, contributor2, _token, token_admin, client) = setup_env();
     let voter3 = Address::generate(&env);
